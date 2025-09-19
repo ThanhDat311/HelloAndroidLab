@@ -1,30 +1,40 @@
 package com.example.helloandroidlab;
-
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
-import android.widget.TextView; // Button is implicitly used via findViewById
+import android.widget.TextView;
 
-import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowCompat;
+
+import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Stack;
 
 public class MainActivity extends AppCompatActivity {
+    private static final String TAG = "MainActivity";
 
     private TextView textViewDisplay;
+    // expression holds the whole infix expression as user types (e.g. "12+3*4")
+    private StringBuilder expression = new StringBuilder();
+    // currentInput is the currently typed number token (for convenience)
     private String currentInput = "0";
-    private Double firstOperand = null;
-    private String pendingOperator = null;
-    // This flag indicates if the current display value is the result of a calculation
-    // or the first operand of an operation, so that the next number input replaces it.
+    // flag: if true, next number input should replace the displayed value (start new number)
     private boolean displayIsResultOrFirstOperand = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
+        // Edge-to-edge: use WindowCompat (more standard than a nonstandard EdgeToEdge class)
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
         setContentView(R.layout.activity_main);
+
+        // apply system bar insets to root view padding (keeps layout visible under system bars)
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
@@ -33,7 +43,7 @@ public class MainActivity extends AppCompatActivity {
 
         textViewDisplay = findViewById(R.id.textView);
         initializeCalculatorButtons();
-        onClearClick(); // Set initial state and display "0"
+        onClearClick(); // initial state
     }
 
     private void initializeCalculatorButtons() {
@@ -63,100 +73,259 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateDisplay() {
-        textViewDisplay.setText(currentInput);
+        // Show full expression when available, otherwise show currentInput
+        String toShow = expression.length() > 0 ? expression.toString() : currentInput;
+        // Limit displayed length (show last part if too long)
+        if (toShow.length() > 40) {
+            toShow = "..." + toShow.substring(toShow.length() - 37);
+        }
+        textViewDisplay.setText(toShow);
     }
 
     private void onNumberClick(String number) {
-        if (currentInput.equals("Error")) {
-            // If current state is Error, pressing a number starts a new calculation
+        Log.d(TAG, "Number clicked: " + number);
+
+        // If current display shows Error, start fresh
+        if ("Error".equals(currentInput)) {
+            expression.setLength(0);
             currentInput = "0";
-            firstOperand = null;
-            pendingOperator = null;
             displayIsResultOrFirstOperand = false;
         }
 
         if (displayIsResultOrFirstOperand) {
+            // start new token (replace)
             currentInput = number;
-            displayIsResultOrFirstOperand = false; // Next number will append
-        } else {
-            if (currentInput.equals("0")) {
-                currentInput = number; // Replace "0"
+            // If previous expression ended with operator, append new number, else start fresh expression
+            if (expression.length() == 0 || isOperatorChar(expression.charAt(expression.length() - 1))) {
+                // append number to expression
+                expression.append(number);
             } else {
-                currentInput += number; // Append
+                // previous expression was a result (we replaced), clear and start new expression
+                expression.setLength(0);
+                expression.append(number);
+            }
+            displayIsResultOrFirstOperand = false;
+        } else {
+            // append digits to currentInput and expression properly
+            if ("0".equals(currentInput)) {
+                currentInput = number;
+                // If expression empty or last is operator, append; else append to last token
+                if (expression.length() == 0 || isOperatorChar(expression.charAt(expression.length() - 1))) {
+                    expression.append(number);
+                } else {
+                    expression.append(number);
+                }
+            } else {
+                currentInput += number;
+                expression.append(number);
             }
         }
         updateDisplay();
     }
 
     private void onOperatorClick(String operator) {
-        if (currentInput.equals("Error")) {
-            return; // Don't do anything if already in error state
+        Log.d(TAG, "Operator clicked: " + operator);
+
+        if ("Error".equals(currentInput)) {
+            // ignore operator after error; user must clear first
+            return;
         }
 
-        try {
-            double currentNumber = Double.parseDouble(currentInput);
-
-            if (firstOperand == null) {
-                // This is the first operand
-                firstOperand = currentNumber;
-            } else if (pendingOperator != null) {
-                // There's a pending operation (e.g., 5 + 3, then user presses '*')
-                // Calculate the pending operation first
-                firstOperand = performCalculation(firstOperand, currentNumber, pendingOperator);
-                currentInput = formatResult(firstOperand);
+        if (expression.length() == 0) {
+            // allow unary minus (start negative number)
+            if (operator.equals("-")) {
+                expression.append("-");
+                currentInput = "-";
+                displayIsResultOrFirstOperand = false;
                 updateDisplay();
-
-                if (currentInput.equals("Error")) {
-                    // Calculation resulted in error (e.g., division by zero)
-                    resetCalculatorOnError();
-                    return;
-                }
             }
-            // Set the new pending operator
-            pendingOperator = operator;
-            displayIsResultOrFirstOperand = true; // Next number input will replace currentInput (which now shows firstOperand or intermediate result)
-        } catch (NumberFormatException e) {
-            currentInput = "Error";
-            updateDisplay();
-            resetCalculatorOnError();
+            // otherwise ignore leading + * /
+            return;
         }
+
+        // If last char is an operator, replace it (so user can change operator easily)
+        char last = expression.charAt(expression.length() - 1);
+        if (isOperatorChar(last)) {
+            expression.setCharAt(expression.length() - 1, operator.charAt(0));
+        } else {
+            expression.append(operator);
+        }
+
+        displayIsResultOrFirstOperand = true; // next number will replace currentInput
+        updateDisplay();
     }
 
     private void onEqualsClick() {
-        if (currentInput.equals("Error") || firstOperand == null || pendingOperator == null) {
-            // Not enough information to calculate or already in error state
+        Log.d(TAG, "Equals clicked. Expression = " + expression.toString());
+        if (expression.length() == 0) {
             return;
         }
 
         try {
-            double secondNumber = Double.parseDouble(currentInput);
-            double result = performCalculation(firstOperand, secondNumber, pendingOperator);
-            currentInput = formatResult(result);
-            updateDisplay();
+            double result = evaluateExpression(expression.toString());
+            String formatted = formatResult(result);
+            // If error (NaN/inf), show Error
+            if ("Error".equals(formatted)) {
+                currentInput = "Error";
+                expression.setLength(0);
+                updateDisplay();
+                return;
+            }
 
-            // Reset for the next independent calculation
-            firstOperand = null; // Or `result` if we want "Ans" functionality
-            pendingOperator = null;
-            displayIsResultOrFirstOperand = true; // Next number input will start a new calculation
-        } catch (NumberFormatException e) {
-            currentInput = "Error";
+            // show result and prepare for next calculation
+            currentInput = formatted;
+            expression.setLength(0);
+            expression.append(formatted); // allow chaining (press + then another number)
+            displayIsResultOrFirstOperand = true;
             updateDisplay();
-            resetCalculatorOnError();
+        } catch (Exception e) {
+            Log.e(TAG, "Evaluation error", e);
+            currentInput = "Error";
+            expression.setLength(0);
+            displayIsResultOrFirstOperand = false;
+            updateDisplay();
         }
     }
 
     private void onClearClick() {
         currentInput = "0";
-        firstOperand = null;
-        pendingOperator = null;
+        expression.setLength(0);
         displayIsResultOrFirstOperand = false;
         updateDisplay();
     }
 
-    private void resetCalculatorOnError() {
-        firstOperand = null;
-        pendingOperator = null;
-        displayIsResultOrFirstOperand = false; // Though currentInput is "Error", next number will start fresh due to onNumberClick logic
+    // ---------- Expression evaluation (shunting-yard -> RPN -> eval) ----------
+    // Supported tokens: numbers (with optional decimal), unary minus (handled during tokenization),
+    // operators + - * /, parentheses (if you later add buttons).
+    private double evaluateExpression(String expr) {
+        List<String> tokens = tokenize(expr);
+        List<String> rpn = infixToRPN(tokens);
+        return evaluateRPN(rpn);
+    }
+
+    private List<String> tokenize(String s) {
+        List<String> tokens = new ArrayList<>();
+        int i = 0;
+        while (i < s.length()) {
+            char c = s.charAt(i);
+            if (Character.isWhitespace(c)) {
+                i++;
+                continue;
+            }
+            if (Character.isDigit(c) || c == '.') {
+                int j = i;
+                while (j < s.length() && (Character.isDigit(s.charAt(j)) || s.charAt(j) == '.')) j++;
+                tokens.add(s.substring(i, j));
+                i = j;
+                continue;
+            }
+            if (c == '+' || c == '*' || c == '/' ) {
+                tokens.add(String.valueOf(c));
+                i++;
+                continue;
+            }
+            if (c == '-') {
+                // unary minus if at start or after operator or after '('
+                if (i == 0 || isOperatorChar(s.charAt(i - 1)) || s.charAt(i - 1) == '(') {
+                    // read number with leading '-'
+                    int j = i + 1;
+                    // allow a number immediately after unary minus
+                    if (j < s.length() && (Character.isDigit(s.charAt(j)) || s.charAt(j) == '.')) {
+                        while (j < s.length() && (Character.isDigit(s.charAt(j)) || s.charAt(j) == '.')) j++;
+                        tokens.add(s.substring(i, j)); // include '-'
+                        i = j;
+                        continue;
+                    } else {
+                        // treat as negative zero fallback (rare since UI appends digits)
+                        tokens.add("-0");
+                        i++;
+                        continue;
+                    }
+                } else {
+                    tokens.add("-");
+                    i++;
+                    continue;
+                }
+            }
+            if (c == '(' || c == ')') {
+                tokens.add(String.valueOf(c));
+                i++;
+                continue;
+            }
+            // unknown char - skip
+            i++;
+        }
+        return tokens;
+    }
+
+    private List<String> infixToRPN(List<String> tokens) {
+        List<String> out = new ArrayList<>();
+        Stack<String> ops = new Stack<>();
+        for (String t : tokens) {
+            if (isNumberToken(t)) {
+                out.add(t);
+            } else if (isOperatorToken(t)) {
+                while (!ops.isEmpty() && isOperatorToken(ops.peek())
+                        && precedence(ops.peek()) >= precedence(t)) {
+                    out.add(ops.pop());
+                }
+                ops.push(t);
+            } else if ("(".equals(t)) {
+                ops.push(t);
+            } else if (")".equals(t)) {
+                while (!ops.isEmpty() && !"(".equals(ops.peek())) {
+                    out.add(ops.pop());
+                }
+                if (!ops.isEmpty() && "(".equals(ops.peek())) {
+                    ops.pop();
+                }
+            }
+        }
+        while (!ops.isEmpty()) {
+            out.add(ops.pop());
+        }
+        return out;
+    }
+
+    private double evaluateRPN(List<String> rpn) {
+        Stack<Double> st = new Stack<>();
+        for (String t : rpn) {
+            if (isNumberToken(t)) {
+                try {
+                    st.push(Double.parseDouble(t));
+                } catch (NumberFormatException e) {
+                    return Double.NaN;
+                }
+            } else if (isOperatorToken(t)) {
+                if (st.size() < 2) return Double.NaN;
+                double b = st.pop();
+                double a = st.pop();
+                double res = performCalculation(a, b, t);
+                st.push(res);
+            }
+        }
+        if (st.isEmpty()) return Double.NaN;
+        return st.pop();
+    }
+
+    private boolean isNumberToken(String t) {
+        if (t == null) return false;
+        char c0 = t.charAt(0);
+        return (Character.isDigit(c0) || c0 == '-' || c0 == '.');
+    }
+
+    private boolean isOperatorToken(String t) {
+        return "+".equals(t) || "-".equals(t) || "*".equals(t) || "/".equals(t);
+    }
+
+    private boolean isOperatorChar(char c) {
+        return c == '+' || c == '-' || c == '*' || c == '/';
+    }
+
+    private int precedence(String op) {
+        if ("*".equals(op) || "/".equals(op)) return 2;
+        if ("+".equals(op) || "-".equals(op)) return 1;
+        return 0;
     }
 
     private double performCalculation(double num1, double num2, String op) {
@@ -169,11 +338,11 @@ public class MainActivity extends AppCompatActivity {
                 return num1 * num2;
             case "/":
                 if (num2 == 0) {
-                    return Double.NaN; // Indicate division by zero
+                    return Double.NaN;
                 }
                 return num1 / num2;
             default:
-                return Double.NaN; // Should not happen with defined operators
+                return Double.NaN;
         }
     }
 
@@ -181,13 +350,17 @@ public class MainActivity extends AppCompatActivity {
         if (Double.isNaN(result) || Double.isInfinite(result)) {
             return "Error";
         }
-        // Remove trailing ".0" for whole numbers
-        if (result == (long) result) {
-            return String.format("%d", (long) result);
+        // If it's a whole number, show without decimal
+        if (Math.abs(result - Math.rint(result)) < 1e-12) {
+            return String.format("%d", (long) Math.rint(result));
         } else {
-            // You might want to limit decimal places here for very long results
-            return String.valueOf(result);
+            // limit decimal places, remove trailing zeros
+            DecimalFormat df = new DecimalFormat("#.##########"); // up to 10 fractional digits
+            df.setGroupingUsed(false);
+            return df.format(result);
         }
     }
 }
+
+
 
