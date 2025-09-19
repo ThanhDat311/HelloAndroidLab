@@ -1,6 +1,7 @@
 package com.example.helloandroidlab;
 
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
 import android.widget.TextView; // Button is implicitly used via findViewById
 
@@ -67,6 +68,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void onNumberClick(String number) {
+        Log.d("MainActivity", "Button was clicked");
         if (currentInput.equals("Error")) {
             // If current state is Error, pressing a number starts a new calculation
             currentInput = "0";
