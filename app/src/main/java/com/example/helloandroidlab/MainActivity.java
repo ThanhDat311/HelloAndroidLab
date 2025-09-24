@@ -1,4 +1,5 @@
 package com.example.helloandroidlab;
+
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
@@ -17,6 +18,7 @@ import java.util.Stack;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
+    private static final int MAX_EXPRESSION_LENGTH = 1000;
 
     private TextView textViewDisplay;
     // expression holds the whole infix expression as user types (e.g. "12+3*4")
@@ -75,9 +77,9 @@ public class MainActivity extends AppCompatActivity {
     private void updateDisplay() {
         // Show full expression when available, otherwise show currentInput
         String toShow = expression.length() > 0 ? expression.toString() : currentInput;
-        // Limit displayed length (show last part if too long)
+        // Limit displayed length (show first part if too long)
         if (toShow.length() > 40) {
-            toShow = "..." + toShow.substring(toShow.length() - 37);
+            toShow = toShow.substring(0, 37) + "...";
         }
         textViewDisplay.setText(toShow);
     }
@@ -86,10 +88,18 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "Number clicked: " + number);
 
         // If current display shows Error, start fresh
-        if ("Error".equals(currentInput)) {
+        if (currentInput.startsWith("Error")) {
             expression.setLength(0);
             currentInput = "0";
             displayIsResultOrFirstOperand = false;
+        }
+
+        if (expression.length() >= MAX_EXPRESSION_LENGTH) {
+            currentInput = "Error: Expression too long";
+            expression.setLength(0);
+            displayIsResultOrFirstOperand = false;
+            updateDisplay();
+            return;
         }
 
         if (displayIsResultOrFirstOperand) {
@@ -107,11 +117,12 @@ public class MainActivity extends AppCompatActivity {
             displayIsResultOrFirstOperand = false;
         } else {
             // append digits to currentInput and expression properly
-            if ("0".equals(currentInput)) {
+            if ("0".equals(currentInput) && !number.equals("0")) {
                 currentInput = number;
-                // If expression empty or last is operator, append; else append to last token
-                if (expression.length() == 0 || isOperatorChar(expression.charAt(expression.length() - 1))) {
-                    expression.append(number);
+                // Replace the last '0' in expression if it's a standalone zero
+                if (expression.length() > 0 && expression.charAt(expression.length() - 1) == '0' &&
+                        (expression.length() == 1 || isOperatorChar(expression.charAt(expression.length() - 2)))) {
+                    expression.setCharAt(expression.length() - 1, number.charAt(0));
                 } else {
                     expression.append(number);
                 }
@@ -126,8 +137,16 @@ public class MainActivity extends AppCompatActivity {
     private void onOperatorClick(String operator) {
         Log.d(TAG, "Operator clicked: " + operator);
 
-        if ("Error".equals(currentInput)) {
+        if (currentInput.startsWith("Error")) {
             // ignore operator after error; user must clear first
+            return;
+        }
+
+        if (expression.length() >= MAX_EXPRESSION_LENGTH) {
+            currentInput = "Error: Expression too long";
+            expression.setLength(0);
+            displayIsResultOrFirstOperand = false;
+            updateDisplay();
             return;
         }
 
@@ -157,26 +176,34 @@ public class MainActivity extends AppCompatActivity {
 
     private void onEqualsClick() {
         Log.d(TAG, "Equals clicked. Expression = " + expression.toString());
-        if (expression.length() == 0) {
+        if (expression.length() == 0 || isOperatorChar(expression.charAt(expression.length() - 1))) {
+            // Empty or ends with operator -> invalid
+            currentInput = "Error: Invalid expression";
+            expression.setLength(0);
+            displayIsResultOrFirstOperand = false;
+            updateDisplay();
             return;
         }
 
         try {
             double result = evaluateExpression(expression.toString());
             String formatted = formatResult(result);
-            // If error (NaN/inf), show Error
-            if ("Error".equals(formatted)) {
-                currentInput = "Error";
-                expression.setLength(0);
-                updateDisplay();
-                return;
-            }
-
-            // show result and prepare for next calculation
             currentInput = formatted;
             expression.setLength(0);
             expression.append(formatted); // allow chaining (press + then another number)
             displayIsResultOrFirstOperand = true;
+            updateDisplay();
+        } catch (ArithmeticException e) {
+            Log.e(TAG, "Evaluation error", e);
+            currentInput = "Error: " + e.getMessage();
+            expression.setLength(0);
+            displayIsResultOrFirstOperand = false;
+            updateDisplay();
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Evaluation error", e);
+            currentInput = "Error: " + e.getMessage();
+            expression.setLength(0);
+            displayIsResultOrFirstOperand = false;
             updateDisplay();
         } catch (Exception e) {
             Log.e(TAG, "Evaluation error", e);
@@ -206,6 +233,7 @@ public class MainActivity extends AppCompatActivity {
     private List<String> tokenize(String s) {
         List<String> tokens = new ArrayList<>();
         int i = 0;
+        int openParenCount = 0;
         while (i < s.length()) {
             char c = s.charAt(i);
             if (Character.isWhitespace(c)) {
@@ -214,24 +242,43 @@ public class MainActivity extends AppCompatActivity {
             }
             if (Character.isDigit(c) || c == '.') {
                 int j = i;
-                while (j < s.length() && (Character.isDigit(s.charAt(j)) || s.charAt(j) == '.')) j++;
+                int dotCount = 0;
+                while (j < s.length() && (Character.isDigit(s.charAt(j)) || s.charAt(j) == '.')) {
+                    if (s.charAt(j) == '.') dotCount++;
+                    if (dotCount > 1) throw new IllegalArgumentException("Multiple decimal points in number");
+                    j++;
+                }
                 tokens.add(s.substring(i, j));
                 i = j;
                 continue;
             }
             if (c == '+' || c == '*' || c == '/' ) {
+                // Check for consecutive operators
+                if (i > 0 && isOperatorChar(s.charAt(i - 1))) {
+                    throw new IllegalArgumentException("Invalid consecutive operators");
+                }
                 tokens.add(String.valueOf(c));
                 i++;
                 continue;
             }
             if (c == '-') {
+                // Check for consecutive operators
+                if (i > 0 && isOperatorChar(s.charAt(i - 1)) && s.charAt(i - 1) != '(') {
+                    throw new IllegalArgumentException("Invalid consecutive operators");
+                }
                 // unary minus if at start or after operator or after '('
                 if (i == 0 || isOperatorChar(s.charAt(i - 1)) || s.charAt(i - 1) == '(') {
                     // read number with leading '-'
                     int j = i + 1;
+                    int dotCount = 0;
                     // allow a number immediately after unary minus
                     if (j < s.length() && (Character.isDigit(s.charAt(j)) || s.charAt(j) == '.')) {
-                        while (j < s.length() && (Character.isDigit(s.charAt(j)) || s.charAt(j) == '.')) j++;
+                        j++; // skip the first digit or dot
+                        while (j < s.length() && (Character.isDigit(s.charAt(j)) || s.charAt(j) == '.')) {
+                            if (s.charAt(j) == '.') dotCount++;
+                            if (dotCount > 1) throw new IllegalArgumentException("Multiple decimal points in number");
+                            j++;
+                        }
                         tokens.add(s.substring(i, j)); // include '-'
                         i = j;
                         continue;
@@ -247,7 +294,15 @@ public class MainActivity extends AppCompatActivity {
                     continue;
                 }
             }
-            if (c == '(' || c == ')') {
+            if (c == '(') {
+                openParenCount++;
+                tokens.add(String.valueOf(c));
+                i++;
+                continue;
+            }
+            if (c == ')') {
+                openParenCount--;
+                if (openParenCount < 0) throw new IllegalArgumentException("Mismatched parentheses");
                 tokens.add(String.valueOf(c));
                 i++;
                 continue;
@@ -255,6 +310,7 @@ public class MainActivity extends AppCompatActivity {
             // unknown char - skip
             i++;
         }
+        if (openParenCount != 0) throw new IllegalArgumentException("Mismatched parentheses");
         return tokens;
     }
 
@@ -294,24 +350,33 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     st.push(Double.parseDouble(t));
                 } catch (NumberFormatException e) {
-                    return Double.NaN;
+                    throw new IllegalArgumentException("Invalid number format: " + t);
                 }
             } else if (isOperatorToken(t)) {
-                if (st.size() < 2) return Double.NaN;
+                if (st.size() < 2) {
+                    throw new IllegalArgumentException("Invalid expression: insufficient operands for operator " + t);
+                }
                 double b = st.pop();
                 double a = st.pop();
                 double res = performCalculation(a, b, t);
                 st.push(res);
             }
         }
-        if (st.isEmpty()) return Double.NaN;
+        if (st.isEmpty()) throw new IllegalArgumentException("Invalid expression: no result");
+        if (st.size() > 1) throw new IllegalArgumentException("Invalid expression: extra operands");
         return st.pop();
     }
 
     private boolean isNumberToken(String t) {
-        if (t == null) return false;
+        if (t == null || t.isEmpty()) return false;
         char c0 = t.charAt(0);
-        return (Character.isDigit(c0) || c0 == '-' || c0 == '.');
+        if (c0 == '-') {
+            // Exclude single '-' (operator), but allow negative numbers like '-3' or '-0'
+            if (t.length() == 1) return false;
+            // Assume the rest is valid (digits or decimal)
+            return true;
+        }
+        return Character.isDigit(c0) || c0 == '.';
     }
 
     private boolean isOperatorToken(String t) {
@@ -338,18 +403,15 @@ public class MainActivity extends AppCompatActivity {
                 return num1 * num2;
             case "/":
                 if (num2 == 0) {
-                    return Double.NaN;
+                    throw new ArithmeticException("Division by zero");
                 }
                 return num1 / num2;
             default:
-                return Double.NaN;
+                throw new IllegalArgumentException("Unknown operator: " + op);
         }
     }
 
     private String formatResult(double result) {
-        if (Double.isNaN(result) || Double.isInfinite(result)) {
-            return "Error";
-        }
         // If it's a whole number, show without decimal
         if (Math.abs(result - Math.rint(result)) < 1e-12) {
             return String.format("%d", (long) Math.rint(result));
@@ -361,6 +423,3 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 }
-
-
-
